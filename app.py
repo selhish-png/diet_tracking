@@ -83,7 +83,44 @@ def get_today_water(user_id):
             WHERE user_id = :uid AND record_date = CURRENT_DATE
         """), {"uid": user_id}).mappings().fetchone()
         return result['total'] if result['total'] else 0
+def get_today_diet_summary(user_id):
+    """從資料庫加總今日已攝取的熱量與各營養素總和"""
+    with conn.session as s:
+        result = s.execute(text("""
+            SELECT 
+                COALESCE(SUM(calories), 0) as total_cal,
+                COALESCE(SUM(carbs), 0) as total_carbs,
+                COALESCE(SUM(protein), 0) as total_protein,
+                COALESCE(SUM(fat), 0) as total_fat,
+                COALESCE(SUM(sugar), 0) as total_sugar
+            FROM diet_records
+            WHERE user_id = :uid AND record_date = CURRENT_DATE
+        """), {"uid": user_id}).mappings().fetchone()
+        return result
 
+def get_today_diet_list(user_id):
+    """取得今天所有的用餐明細列表"""
+    with conn.session as s:
+        results = s.execute(text("""
+            SELECT record_id, food_name, meal_type, weight, calories, carbs, protein, fat, sugar
+            FROM diet_records
+            WHERE user_id = :uid AND record_date = CURRENT_DATE
+            ORDER BY 
+                CASE meal_type 
+                    WHEN '早餐' THEN 1 
+                    WHEN '午餐' THEN 2 
+                    WHEN '晚餐' THEN 3 
+                    WHEN '點心' THEN 4 
+                    ELSE 5 
+                END, record_id DESC
+        """), {"uid": user_id}).mappings().fetchall()
+        return results
+
+def delete_diet_record(record_id):
+    """刪除指定的飲食紀錄"""
+    with conn.session as s:
+        s.execute(text("DELETE FROM diet_records WHERE record_id = :rid"), {"rid": record_id})
+        s.commit()
 # -----------------------------------------------------------------------------
 # 系統初始化與狀態管理
 # -----------------------------------------------------------------------------
@@ -145,41 +182,61 @@ with st.sidebar:
     st.caption(f"每日總消耗 (TDEE): {tdee:.0f} kcal")
 
 # -----------------------------------------------------------------------------
-# 主畫面：今日記錄與統計
+# 主畫面：今日數據動態統計
 # -----------------------------------------------------------------------------
-st.title(f"今日飲食記錄 - {today.strftime('%Y/%m/%d')}")
+# 呼叫函數取得今日最新加總數據
+diet_summary = get_today_diet_summary(current_user['user_id'])
 
 # 三大板塊佈局
 col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("### 🔥 熱量攝取")
-    st.progress(min(st.session_state.total_calories / target_calories, 1.0))
-    st.write(f"**已攝取:** {st.session_state.total_calories} / {target_calories} kcal")
-    st.write(f"**剩餘:** {max(target_calories - st.session_state.total_calories, 0)} kcal")
+    current_cal = int(diet_summary['total_cal'])
+    # 計算進度條比例 (防呆最高 1.0)
+    cal_progress = min(current_cal / target_calories, 1.0) if target_calories > 0 else 0.0
+    st.progress(cal_progress)
+    st.write(f"**已攝取:** {current_cal:,} / {target_calories:,} kcal")
+
+    # 算剩餘熱量
+    remaining_cal = target_calories - current_cal
+    if remaining_cal >= 0:
+        st.write(f"**剩餘可攝取:** {remaining_cal:,} kcal")
+    else:
+        st.markdown(f"💥 **爆卡警告: 已超標 {abs(remaining_cal):,} kcal!**")
 
 with col2:
-    st.markdown("### 📊 營養素攝取統計")
-    # 這裡放預設的進度條作為 UI 佔位符，後續與資料庫串接
-    st.write(f"🍚 碳水: 0g / {target_carbs:.0f}g")
-    st.progress(0.0)
-    st.write(f"🥩 蛋白: 0g / {target_protein:.0f}g")
-    st.progress(0.0)
-    st.write(f"🥑 脂肪: 0g / {target_fat:.0f}g")
-    st.progress(0.0)
+    st.markdown("### 📊 營養素攝取統計（台灣衛福部標準）")
+
+    # 碳水化合物
+    c_carbs = diet_summary['total_carbs']
+    carbs_p = min(c_carbs / target_carbs, 1.0) if target_carbs > 0 else 0.0
+    st.write(f"🍚 碳水: {c_carbs:.1f}g / {target_carbs:.0f}g ({carbs_p * 100:.0f}%)")
+    st.progress(carbs_p)
+
+    # 蛋白質
+    c_protein = diet_summary['total_protein']
+    protein_p = min(c_protein / target_protein, 1.0) if target_protein > 0 else 0.0
+    st.write(f"🥩 蛋白: {c_protein:.1f}g / {target_protein:.0f}g ({protein_p * 100:.0f}%)")
+    st.progress(protein_p)
+
+    # 脂肪
+    c_fat = diet_summary['total_fat']
+    fat_p = min(c_fat / target_fat, 1.0) if target_fat > 0 else 0.0
+    st.write(f"🥑 脂肪: {c_fat:.1f}g / {target_fat:.0f}g ({fat_p * 100:.0f}%)")
+    st.progress(fat_p)
 
 with col3:
     st.markdown("### 💧 今日水分攝取")
-    # 改為從資料庫讀取，而不是 session_state
     today_water = get_today_water(current_user['user_id'])
-
     water_progress = min(today_water / target_water, 1.0)
     st.progress(water_progress)
-    st.write(f"**已飲用:** {today_water} / {target_water} ml")
+    st.write(f"**已飲用:** {today_water:,} / {target_water:,} ml")
 
     if st.button("💧 +250ml", use_container_width=True):
         add_water_record(current_user['user_id'], 250)
-        st.rerun()  # 重新載入畫面，讓進度條更新
+        st.rerun()
+
 
 st.divider()
 
@@ -304,3 +361,41 @@ with st.expander("展開飲食記錄面板", expanded=True):
             # 清除暫存狀態並刷新頁面
             st.session_state.ai_results = None
             st.rerun()
+
+# -----------------------------------------------------------------------------
+# 5. 用餐記錄列表展示
+# -----------------------------------------------------------------------------
+st.divider()
+st.subheader("🍽️ 今日用餐記錄明細")
+
+today_records = get_today_diet_list(current_user['user_id'])
+
+if not today_records:
+    st.info("💡 今天還沒有任何飲食紀錄喔！趕快使用上方的 AI 面板吃點東西吧！")
+else:
+    # 依餐別用精緻的卡片或文字排版輸出
+    for r in today_records:
+        # 用 st.container 畫出整齊的邊框區塊
+        with st.container():
+            # 切分左右兩欄：左邊顯示食物數據，右邊放一個精簡的刪除按鈕
+            item_col, btn_col = st.columns([0, 1])
+
+            with item_col:
+                # 依餐別給予不同圖示
+                emoji_map = {"早餐": "🍳", "午餐": "🍜", "晚餐": "🍱", "點心": "🍰"}
+                emoji = emoji_map.get(r['meal_type'], "🍽️")
+
+                st.markdown(
+                    f"#### {emoji} {r['meal_type']} | **{r['food_name']}** ({r['weight']:.0f}g) — `{r['calories']:.0f} kcal`")
+                st.caption(
+                    f"🧪 營養素分配 — 碳水: {r['carbs']:.1f}g | 蛋白: {r['protein']:.1f}g | 脂肪: {r['fat']:.1f}g | 糖: {r['sugar']:.1f}g")
+
+            with btn_col:
+                # 垂直留白對齊按鈕
+                st.write("")
+                # 每筆紀錄綁定獨立的 key 避免衝突
+                if st.button("🗑️ 刪除", key=f"del_{r['record_id']}", use_container_width=True):
+                    delete_diet_record(r['record_id'])
+                    st.toast(f"已刪除 {r['food_name']} 的紀錄", icon="🗑️")
+                    st.rerun()
+        st.write("")  # 稍微留白
