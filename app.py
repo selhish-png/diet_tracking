@@ -121,6 +121,53 @@ def delete_diet_record(record_id):
     with conn.session as s:
         s.execute(text("DELETE FROM diet_records WHERE record_id = :rid"), {"rid": record_id})
         s.commit()
+
+
+def get_historical_food_list(user_id):
+    """
+    撈取使用者過去吃過的所有食物列表，按使用頻率與最後使用時間排序。
+    回傳一個清單，方便放入下拉選單。
+    """
+    with conn.session as s:
+        results = s.execute(text("""
+            SELECT food_name, COUNT(*) as usage_count, MAX(record_date) as last_used
+            FROM diet_records
+            WHERE user_id = :uid
+            GROUP BY food_name
+            ORDER BY usage_count DESC, last_used DESC
+            LIMIT 50
+        """), {"uid": user_id}).mappings().fetchall()
+
+        # 只取出食物名稱組成一個 List
+        return [r['food_name'] for r in results]
+
+
+def get_food_nutrition_by_name(user_id, food_name):
+    """
+    當使用者選了某個歷史食物，直接去抓最近一次吃這個食物時的『每克營養素比例』，
+    以便依據新重量等比例放大縮小。
+    """
+    with conn.session as s:
+        # 找最近一筆該食物的紀錄
+        result = s.execute(text("""
+            SELECT calories, carbs, protein, fat, sugar, weight
+            FROM diet_records
+            WHERE user_id = :uid AND food_name = :name
+            ORDER BY record_date DESC, record_id DESC
+            LIMIT 1
+        """), {"uid": user_id, "name": food_name}).mappings().fetchone()
+
+        if result and result['weight'] > 0:
+            w = result['weight']
+            # 換算回每 100g 的營養素，方便後續計算
+            return {
+                "calories": (result['calories'] / w) * 100,
+                "carbs": (result['carbs'] / w) * 100,
+                "protein": (result['protein'] / w) * 100,
+                "fat": (result['fat'] / w) * 100,
+                "sugar": (result['sugar'] / w) * 100
+            }
+        return None
 # -----------------------------------------------------------------------------
 # 系統初始化與狀態管理
 # -----------------------------------------------------------------------------
@@ -140,47 +187,30 @@ day_count = (today - start_date).days + 1
 # -----------------------------------------------------------------------------
 # 側邊欄：用戶資訊與目標設定
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 側邊栏：固定基準目標
+# -----------------------------------------------------------------------------
 with st.sidebar:
     st.header("👤 用戶資訊")
     st.write(f"📅 **今天是第 {day_count} 天**")
 
-    # 基本資料輸入 (預設數值已配置)
-    age = st.number_input("年齡", min_value=1, max_value=120, value=37, step=1)
-    gender = st.selectbox("性別", options=["男", "女"])
-    height = st.number_input("身高 (cm)", min_value=100.0, max_value=250.0, value=186.0, step=0.1)
-    weight = st.number_input("體重 (kg)", min_value=30.0, max_value=200.0, value=95.0, step=0.1)
-
-    activity_levels = {
-        "久坐不動": 1.2,
-        "輕度活動": 1.375,
-        "中度活動": 1.55,
-        "高度活動": 1.725,
-        "極度活動": 1.9
-    }
-    activity = st.selectbox("活動量", options=list(activity_levels.keys()), index=0)
-
-    # BMR 計算 (Harris-Benedict 公式)
-    if gender == "男":
-        bmr = 88.362 + (13.397 * weight) + (4.799 * height) - (5.677 * age)
-    else:
-        bmr = 447.593 + (9.247 * weight) + (3.098 * height) - (4.330 * age)
-
-    tdee = bmr * activity_levels[activity]
-
     st.divider()
-    st.subheader("🎯 每日目標")
-    target_calories = st.number_input("目標熱量 (kcal)", value=int(tdee), step=100)
+    st.subheader("🎯 每日固定目標")
 
-    # 營養素目標自動計算 (台灣衛福部標準)
-    target_carbs = (target_calories * 0.55) / 4
-    target_protein = weight * 1.0
-    target_fat = (target_calories * 0.25) / 9
-    target_sugar = (target_calories * 0.10) / 4
+    # 依需求直接固定數值
+    target_calories = 1883
+    target_protein = 125.0
+    target_fat = 63.0
+    target_carbs = 210.0
+    target_sugar = 25.0
     target_water = 2000
 
-    st.caption(f"基礎代謝率 (BMR): {bmr:.0f} kcal")
-    st.caption(f"每日總消耗 (TDEE): {tdee:.0f} kcal")
-
+    st.write(f"🔥 **目標熱量:** {target_calories} kcal")
+    st.write(f"🍚 **碳水化合物:** {target_carbs} g")
+    st.write(f"🥩 **蛋白質:** {target_protein} g")
+    st.write(f"🥑 **脂肪:** {target_fat} g")
+    st.write(f"🍬 **添加糖上限:** <{target_sugar} g")
+    st.write(f"💧 **水分目標:** {target_water} ml")
 # -----------------------------------------------------------------------------
 # 主畫面：今日數據動態統計
 # -----------------------------------------------------------------------------
@@ -189,32 +219,30 @@ diet_summary = get_today_diet_summary(current_user['user_id'])
 
 # 三大板塊佈局
 col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.markdown("### 🔥 熱量攝取")
     current_cal = int(diet_summary['total_cal'])
-    # 計算進度條比例 (防呆最高 1.0)
     cal_progress = min(current_cal / target_calories, 1.0) if target_calories > 0 else 0.0
     st.progress(cal_progress)
     st.write(f"**已攝取:** {current_cal:,} / {target_calories:,} kcal")
 
-    # 算剩餘熱量
     remaining_cal = target_calories - current_cal
     if remaining_cal >= 0:
-        st.write(f"**剩餘可攝取:** {remaining_cal:,} kcal")
+        st.write(f"**剩餘:** {remaining_cal:,} kcal")
     else:
-        st.markdown(f"💥 **爆卡警告: 已超標 {abs(remaining_cal):,} kcal!**")
+        st.markdown(f"💥 **爆卡: 超標 {abs(remaining_cal):,} kcal!**")
 
 with col2:
-    st.markdown("### 📊 營養素攝取統計（台灣衛福部標準）")
-
-    # 碳水化合物
+    st.markdown("### 📊 📊 三大營養素")
+    # 碳水
     c_carbs = diet_summary['total_carbs']
     carbs_p = min(c_carbs / target_carbs, 1.0) if target_carbs > 0 else 0.0
     st.write(f"🍚 碳水: {c_carbs:.1f}g / {target_carbs:.0f}g ({carbs_p * 100:.0f}%)")
     st.progress(carbs_p)
 
-    # 蛋白質
+    # 蛋白
     c_protein = diet_summary['total_protein']
     protein_p = min(c_protein / target_protein, 1.0) if target_protein > 0 else 0.0
     st.write(f"🥩 蛋白: {c_protein:.1f}g / {target_protein:.0f}g ({protein_p * 100:.0f}%)")
@@ -227,7 +255,21 @@ with col2:
     st.progress(fat_p)
 
 with col3:
-    st.markdown("### 💧 今日水分攝取")
+    st.markdown("### 🍬 糖分攝取")
+    c_sugar = diet_summary['total_sugar']
+    sugar_p = min(c_sugar / target_sugar, 1.0) if target_sugar > 0 else 0.0
+
+    # 根據是否超標給予進度條與文字警告
+    if c_sugar > target_sugar:
+        st.markdown(f"⚠️ **糖分超標警告！**")
+        st.write(f"🍬 已攝取: **{c_sugar:.1f}g** / {target_sugar:.0f}g")
+        st.progress(sugar_p)  # 超標時進度條滿格
+    else:
+        st.write(f"🍬 已攝取: {c_sugar:.1f}g / {target_sugar:.0f}g ({sugar_p * 100:.0f}%)")
+        st.progress(sugar_p)
+
+with col4:
+    st.markdown("### 💧 今日水分")
     today_water = get_today_water(current_user['user_id'])
     water_progress = min(today_water / target_water, 1.0)
     st.progress(water_progress)
@@ -236,7 +278,6 @@ with col3:
     if st.button("💧 +250ml", use_container_width=True):
         add_water_record(current_user['user_id'], 250)
         st.rerun()
-
 
 st.divider()
 
@@ -294,71 +335,103 @@ if "ai_results" not in st.session_state:
     st.session_state.ai_results = None
 
 with st.expander("展開飲食記錄面板", expanded=True):
-    # 基礎輸入欄位
+    # 1. 基礎欄位選擇
     meal_type = st.selectbox("用餐時間", ["早餐", "午餐", "晚餐", "點心"], key="meal_type_select")
-    food_name = st.text_input("✍️ 手動輸入新食物名稱", placeholder="例如：烤雞胸肉、滷肉飯", key="food_name_input")
-    food_weight = st.number_input("重量/份量 (克)", min_value=1, value=100, step=10, key="food_weight_input")
 
-    # 按鈕：啟動 AI 查詢
-    if st.button("🤖 使用 AI 查詢營養資訊", use_container_width=True):
-        if food_name:
-            with st.spinner(f"Gemini 正在極速分析 {food_name} 的營養成分..."):
-                raw_nutrition = query_food_nutrition_via_ai(food_name)
-                if raw_nutrition:
-                    st.session_state.ai_results = raw_nutrition
-                    st.success("🎉 AI 查詢成功！請在下方確認並調整實際攝取總量。")
-                else:
-                    st.error("🔍 AI 無法識別該食物，請嘗試換個說法或手動輸入。")
+    # 新增：計量單位切換 (公克 vs 份數)
+    unit_type = st.radio("計量單位", ["公克 (g)", "個/顆/份"], horizontal=True)
+
+    if unit_type == "公克 (g)":
+        food_weight = st.number_input("輸入重量 (公克)", min_value=1, value=100, step=10)
+    else:
+        food_units = st.number_input("輸入數量 (個/顆/份)", min_value=0.1, value=1.0, step=0.5)
+        # 為了相容原本資料庫的 weight 欄位，我們將「1份」在後台定義為「100克基準」
+        food_weight = int(food_units * 100)
+
+    # 2. 分頁切換
+    tab1, tab2 = st.tabs(["📋 從歷史記錄選擇", "✍️ 使用 AI 查詢新食物"])
+
+    final_food_name = ""
+    base_nutrition = None
+
+    with tab1:
+        hist_foods = get_historical_food_list(current_user['user_id'])
+        if not hist_foods:
+            st.info("💡 您目前還沒有歷史飲食紀錄喔！請先至隔壁分頁使用 AI 新增第一筆食物。")
         else:
-            st.warning("⚠️ 請先輸入食物名稱再進行 AI 查詢。")
+            selected_hist = st.selectbox("請選擇之前吃過的食物：", options=["-- 請選擇 --"] + hist_foods)
+            if selected_hist != "-- 請選擇 --":
+                final_food_name = selected_hist
+                base_nutrition = get_food_nutrition_by_name(current_user['user_id'], selected_hist)
 
-    # 如果有 AI 查詢結果，顯示計算與微調面板
-    if st.session_state.ai_results:
-        st.markdown("#### 📋 AI 估算結果（每 100g 原料）")
-        res = st.session_state.ai_results
+    with tab2:
+        # 微調提示詞引導，讓使用者可以更自由輸入
+        food_name = st.text_input("✍️ 輸入新食物名稱", placeholder="例如：雞蛋、大麥克漢堡、烤雞胸肉",
+                                  key="food_name_input")
 
-        # 顯示每 100g 基準值
-        st.text(f"食物判定：{res.get('food_name', food_name)} | 基準：{res.get('calories', 0)} kcal/100g")
+        if st.button("🤖 使用 AI 查詢營養資訊", use_container_width=True):
+            if food_name:
+                with st.spinner(f"Gemini 正在分析 {food_name}..."):
+                    raw_nutrition = query_food_nutrition_via_ai(food_name)
+                    if raw_nutrition:
+                        st.session_state.ai_results = raw_nutrition
+                        st.success("🎉 AI 查詢成功！")
+                    else:
+                        st.error("🔍 AI 無法識別，請嘗試換個說法。")
+            else:
+                st.warning("⚠️ 請先輸入食物名稱。")
 
-        # 自動根據使用者輸入的重量，換算當餐實際攝取總量
+        if st.session_state.ai_results and food_name:
+            final_food_name = food_name
+            base_nutrition = st.session_state.ai_results
+
+    # 3. 統一換算與渲染
+    if final_food_name and base_nutrition:
+        st.markdown("---")
+
+        # 顯示友善的名稱
+        if unit_type == "公克 (g)":
+            st.markdown(f"#### 🍽️ 本餐攝取總量預估 ({final_food_name} - {food_weight} g)")
+        else:
+            st.markdown(f"#### 🍽️ 本餐攝取總量預估 ({final_food_name} - {food_units} 個/顆/份)")
+
+        # 核心換算邏輯
         ratio = food_weight / 100.0
 
-        st.markdown(f"#### 🍽️ 本餐攝取總量預估 ({food_weight}克)")
-        st.caption("您可以直接修改下方數值，修正 AI 估計的誤差：")
-
-        # 讓使用者可以微調數值
-        calc_cal = st.number_input("總熱量 (kcal)", value=float(res.get('calories', 0) * ratio), step=5.0)
+        calc_cal = st.number_input("總熱量 (kcal)", value=float(base_nutrition.get('calories', 0) * ratio), step=5.0)
 
         c_item1, c_item2, c_item3, c_item4 = st.columns(4)
         with c_item1:
-            calc_carbs = st.number_input("碳水化合物 (g)", value=float(res.get('carbs', 0) * ratio), step=1.0)
+            calc_carbs = st.number_input("碳水化合物 (g)", value=float(base_nutrition.get('carbs', 0) * ratio),
+                                         step=1.0)
         with c_item2:
-            calc_protein = st.number_input("蛋白質 (g)", value=float(res.get('protein', 0) * ratio), step=1.0)
+            calc_protein = st.number_input("蛋白質 (g)", value=float(base_nutrition.get('protein', 0) * ratio),
+                                           step=1.0)
         with c_item3:
-            calc_fat = st.number_input("脂肪 (g)", value=float(res.get('fat', 0) * ratio), step=1.0)
+            calc_fat = st.number_input("脂肪 (g)", value=float(base_nutrition.get('fat', 0) * ratio), step=1.0)
         with c_item4:
-            calc_sugar = st.number_input("添加糖 (g)", value=float(res.get('sugar', 0) * ratio), step=1.0)
+            calc_sugar = st.number_input("添加糖 (g)", value=float(base_nutrition.get('sugar', 0) * ratio), step=1.0)
 
         if st.button("✅ 確認並將此餐記錄至資料庫", type="primary", use_container_width=True):
-            # 這裡我們需要呼叫寫入資料庫的函數 (將在下一步完全補齊)
             with conn.session as s:
                 s.execute(text("""
                     INSERT INTO diet_records (
                         user_id, food_name, meal_type, weight, calories, 
-                        carbs, protein, fat, sugar, record_date, ai_queried
+                        carbs, protein, fat, sugar, record_date, ai_queried, is_from_history
                     ) VALUES (
                         :uid, :name, :m_type, :weight, :cal, 
-                        :carbs, :protein, :fat, :sugar, CURRENT_DATE, true
+                        :carbs, :protein, :fat, :sugar, CURRENT_DATE, :ai_q, :is_hist
                     )
                 """), {
-                    "uid": current_user['user_id'], "name": food_name, "m_type": meal_type,
+                    "uid": current_user['user_id'], "name": final_food_name, "m_type": meal_type,
                     "weight": food_weight, "cal": calc_cal, "carbs": calc_carbs,
-                    "protein": calc_protein, "fat": calc_fat, "sugar": calc_sugar
+                    "protein": calc_protein, "fat": calc_fat, "sugar": calc_sugar,
+                    "ai_q": True if st.session_state.ai_results else False,
+                    "is_hist": True if tab1 else False
                 })
                 s.commit()
 
-            st.toast(f"已成功加入【{meal_type}】: {food_name}！", icon="🥗")
-            # 清除暫存狀態並刷新頁面
+            st.toast(f"已成功加入【{meal_type}】: {final_food_name}！", icon="🥗")
             st.session_state.ai_results = None
             st.rerun()
 
