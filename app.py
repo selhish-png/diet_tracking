@@ -2,45 +2,88 @@ import streamlit as st
 import pandas as pd
 import datetime
 import google.generativeai as genai
-
+from sqlalchemy import text
 st.set_page_config(page_title="飲食熱量記錄系統", page_icon="🔥", layout="wide")
 
 # -----------------------------------------------------------------------------
 # 1. 系統安全：密碼鎖機制
 # -----------------------------------------------------------------------------
-def check_password():
-    """驗證使用者密碼是否正確"""
-    def password_entered():
-        # 核對輸入的密碼是否與 secrets 中的密碼相符
-        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # 驗證成功後清除輸入框內的密碼紀錄
-        else:
-            st.session_state["password_correct"] = False
-
-    if "password_correct" not in st.session_state:
-        # 第一次進入，顯示密碼輸入框
-        st.title("🔒 系統已鎖定")
-        st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
-        return False
-    elif not st.session_state["password_correct"]:
-        # 密碼錯誤，顯示錯誤提示
-        st.title("🔒 系統已鎖定")
-        st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
-        st.error("😕 密碼錯誤，請再試一次。")
-        return False
-    else:
-        # 密碼正確，放行
-        return True
-
-# 如果密碼驗證未通過，就停止執行後續的所有程式碼
-if not check_password():
-    st.stop()
+# def check_password():
+#     """驗證使用者密碼是否正確"""
+#     def password_entered():
+#         # 核對輸入的密碼是否與 secrets 中的密碼相符
+#         if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+#             st.session_state["password_correct"] = True
+#             del st.session_state["password"]  # 驗證成功後清除輸入框內的密碼紀錄
+#         else:
+#             st.session_state["password_correct"] = False
+#
+#     if "password_correct" not in st.session_state:
+#         # 第一次進入，顯示密碼輸入框
+#         st.title("🔒 系統已鎖定")
+#         st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
+#         return False
+#     elif not st.session_state["password_correct"]:
+#         # 密碼錯誤，顯示錯誤提示
+#         st.title("🔒 系統已鎖定")
+#         st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
+#         st.error("😕 密碼錯誤，請再試一次。")
+#         return False
+#     else:
+#         # 密碼正確，放行
+#         return True
+#
+# # 如果密碼驗證未通過，就停止執行後續的所有程式碼
+# if not check_password():
+#     st.stop()
 
 # ==========================================
-# (原本的程式碼從這裡開始繼續放...)
-# 初始化 Session State 等邏輯
+# 2. 資料庫連線與初始化
 # ==========================================
+# 建立資料庫連線 (會自動讀取 secrets.toml 中的 connections.postgresql)
+conn = st.connection("postgresql", type="sql")
+
+
+def get_or_create_user():
+    with conn.session as s:
+        # 使用 mappings() 可以讓我們用字典的方式讀取資料 (例如 user['username'])
+        user = s.execute(text("SELECT * FROM users WHERE user_id = 1")).mappings().fetchone()
+
+        if not user:
+            # 建立第一筆資料作為預設用戶
+            s.execute(text("""
+                INSERT INTO users (username, age, gender, height, weight, target_calories)
+                VALUES ('主要用戶', 37, '男', 186.0, 95.0, 2200);
+            """))
+            s.commit()
+            user = s.execute(text("SELECT * FROM users WHERE user_id = 1")).mappings().fetchone()
+        return user
+
+
+# 取得目前使用者資料
+current_user = get_or_create_user()
+
+# ==========================================
+# 3. 資料庫操作函數
+# ==========================================
+def add_water_record(user_id, amount):
+    """將喝水紀錄寫入資料庫"""
+    with conn.session as s:
+        s.execute(text("""
+            INSERT INTO water_records (user_id, amount, record_date, record_time)
+            VALUES (:uid, :amt, CURRENT_DATE, CURRENT_TIME)
+        """), {"uid": user_id, "amt": amount})
+        s.commit()
+
+def get_today_water(user_id):
+    """計算今天總共喝了多少水"""
+    with conn.session as s:
+        result = s.execute(text("""
+            SELECT SUM(amount) as total FROM water_records
+            WHERE user_id = :uid AND record_date = CURRENT_DATE
+        """), {"uid": user_id}).mappings().fetchone()
+        return result['total'] if result['total'] else 0
+
 # -----------------------------------------------------------------------------
 # 系統初始化與狀態管理
 # -----------------------------------------------------------------------------
@@ -127,13 +170,16 @@ with col2:
 
 with col3:
     st.markdown("### 💧 今日水分攝取")
-    water_progress = min(st.session_state.water_intake / target_water, 1.0)
+    # 改為從資料庫讀取，而不是 session_state
+    today_water = get_today_water(current_user['user_id'])
+
+    water_progress = min(today_water / target_water, 1.0)
     st.progress(water_progress)
-    st.write(f"**已飲用:** {st.session_state.water_intake} / {target_water} ml")
+    st.write(f"**已飲用:** {today_water} / {target_water} ml")
 
     if st.button("💧 +250ml", use_container_width=True):
-        st.session_state.water_intake += 250
-        st.rerun()
+        add_water_record(current_user['user_id'], 250)
+        st.rerun()  # 重新載入畫面，讓進度條更新
 
 st.divider()
 
