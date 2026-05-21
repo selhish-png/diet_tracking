@@ -378,7 +378,7 @@ else:
         # 用 st.container 畫出整齊的邊框區塊
         with st.container():
             # 切分左右兩欄：左邊顯示食物數據，右邊放一個精簡的刪除按鈕
-            item_col, btn_col = st.columns([0, 1])
+            item_col, btn_col = st.columns([5, 1])
 
             with item_col:
                 # 依餐別給予不同圖示
