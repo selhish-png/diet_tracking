@@ -8,34 +8,34 @@ st.set_page_config(page_title="飲食熱量記錄系統", page_icon="🔥", layo
 # -----------------------------------------------------------------------------
 # 1. 系統安全：密碼鎖機制
 # -----------------------------------------------------------------------------
-# def check_password():
-#     """驗證使用者密碼是否正確"""
-#     def password_entered():
-#         # 核對輸入的密碼是否與 secrets 中的密碼相符
-#         if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
-#             st.session_state["password_correct"] = True
-#             del st.session_state["password"]  # 驗證成功後清除輸入框內的密碼紀錄
-#         else:
-#             st.session_state["password_correct"] = False
-#
-#     if "password_correct" not in st.session_state:
-#         # 第一次進入，顯示密碼輸入框
-#         st.title("🔒 系統已鎖定")
-#         st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
-#         return False
-#     elif not st.session_state["password_correct"]:
-#         # 密碼錯誤，顯示錯誤提示
-#         st.title("🔒 系統已鎖定")
-#         st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
-#         st.error("😕 密碼錯誤，請再試一次。")
-#         return False
-#     else:
-#         # 密碼正確，放行
-#         return True
-#
-# # 如果密碼驗證未通過，就停止執行後續的所有程式碼
-# if not check_password():
-#     st.stop()
+def check_password():
+    """驗證使用者密碼是否正確"""
+    def password_entered():
+        # 核對輸入的密碼是否與 secrets 中的密碼相符
+        if st.session_state["password"] == st.secrets["APP_PASSWORD"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # 驗證成功後清除輸入框內的密碼紀錄
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        # 第一次進入，顯示密碼輸入框
+        st.title("🔒 系統已鎖定")
+        st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        # 密碼錯誤，顯示錯誤提示
+        st.title("🔒 系統已鎖定")
+        st.text_input("請輸入專屬密碼以解鎖系統：", type="password", on_change=password_entered, key="password")
+        st.error("😕 密碼錯誤，請再試一次。")
+        return False
+    else:
+        # 密碼正確，放行
+        return True
+
+# 如果密碼驗證未通過，就停止執行後續的所有程式碼
+if not check_password():
+    st.stop()
 
 # ==========================================
 # (原本的程式碼從這裡開始繼續放...)
