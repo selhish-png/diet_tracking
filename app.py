@@ -214,7 +214,7 @@ def query_food_nutrition_via_ai(food_name):
 
     try:
         # 使用 2026 年推薦的穩定模型
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content(prompt)
 
         # 清理可能包含的 ```json 標籤，確保解析順利
